@@ -7464,6 +7464,7 @@ dependencies = [
  "lazy_static",
  "libsecp256k1",
  "log",
+ "mach",
  "parity-scale-codec",
  "parity-wasm 0.42.2",
  "parking_lot 0.11.1",
