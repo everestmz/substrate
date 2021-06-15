@@ -24,6 +24,7 @@ use std::{
 };
 use sc_executor_common::wasm_runtime::WasmInstance;
 
+/// Returns how much bytes of the instance's memory is currently resident (backed by phys mem)
 pub fn instance_resident_bytes(instance: &dyn WasmInstance) -> usize {
 	let base_addr = instance.linear_memory_base_ptr().unwrap() as usize;
 	Smaps::new().get_rss(base_addr).expect("failed to get rss")
