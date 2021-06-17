@@ -26,7 +26,7 @@ use crate::imports::{Imports, resolve_imports};
 use crate::instance_wrapper::{InstanceWrapper, EntryPoint};
 use crate::state_holder;
 
-use std::{path::PathBuf, rc::Rc};
+use std::{path::PathBuf, rc::Rc, ops::Range};
 use std::sync::Arc;
 use std::path::Path;
 use sc_executor_common::{
@@ -183,7 +183,7 @@ impl WasmInstance for WasmtimeInstance {
 		}
 	}
 
-	fn linear_memory_base_ptr(&self) -> Option<*const u8> {
+	fn linear_memory_range(&self) -> Option<Range<usize>> {
 		match &self.strategy {
 			Strategy::RecreateInstance(_) => {
 				// We do not keep the wasm instance around, therefore there is no linear memory
@@ -192,7 +192,7 @@ impl WasmInstance for WasmtimeInstance {
 			}
 			Strategy::FastInstanceReuse {
 				instance_wrapper, ..
-			} => Some(instance_wrapper.base_ptr()),
+			} => Some(instance_wrapper.linear_memory_range()),
 		}
 	}
 }

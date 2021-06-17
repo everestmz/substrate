@@ -22,7 +22,7 @@
 use crate::util;
 use crate::imports::Imports;
 
-use std::{slice, marker};
+use std::{slice, marker, ops::Range};
 use sc_executor_common::{
 	error::{Error, Result},
 	runtime_blob,
@@ -416,9 +416,11 @@ impl InstanceWrapper {
 		}
 	}
 
-	/// Returns the pointer to the first byte of the linear memory for this instance.
-	pub fn base_ptr(&self) -> *const u8 {
-		self.memory.data_ptr()
+	/// Returns the virtual addresses that cover this instance's linear memory.
+	pub fn linear_memory_range(&self) -> Range<usize> {
+		let start = self.memory.data_ptr() as usize;
+		let end = start + self.memory.data_size();
+		start..end
 	}
 
 	/// Removes physical backing from the allocated linear memory. This leads to returning the memory
