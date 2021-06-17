@@ -26,7 +26,7 @@ use mach::{
     kern_return::KERN_SUCCESS,
     traps::mach_task_self,
 	port::mach_port_t,
-    vm::{mach_vm_allocate, mach_vm_protect},
+    vm::{mach_vm_allocate, mach_vm_deallocate, mach_vm_protect},
     vm_prot::{vm_prot_t, VM_PROT_NONE, VM_PROT_DEFAULT},
 	vm_page_size::vm_page_size,
 };
@@ -65,6 +65,10 @@ pub struct Memory {
 	/// a new mapping and copy over. However, this would only happen on 32bit systems
 	/// where not enough virtual space is available. Those systems are not supported
 	/// anyways for macos.
+	///
+	/// # Note
+	///
+	/// This includes the guard bytes which are mapped but never accessible.
 	mapped_bytes: u64,
 	/// Size of the guard pages in bytes.
 	guard_bytes: u64,
@@ -77,6 +81,28 @@ pub struct Memory {
 	wasm_pages_max: Option<u32>,
 }
 
+impl Allocator {
+	/// Allocate some memory and return the address to it in the `address` field.
+	fn allocate(&self, address: &mut u64, size: u64, flags: VmFlags) -> Result<(), String> {
+		// # Safety
+		//
+		// We do not allow passing of `VM_FLAGS_OVERWRITE` which would allow overwriting
+		// existing virtual regions. Other from that allocating memory is safe.
+		let result = unsafe {
+			// The `mach_vm` interface always returns page aligned addresses.
+			mach_vm_allocate(self.task, address, size, flags.bits())
+		};
+		if result == KERN_SUCCESS {
+			Ok(())
+		} else {
+			Err(format!(
+				"mach_vm_allocate returned: {}. address: 0x{:08x} size: 0x{:08x} flags: {:?}",
+				result, address, size, flags,
+			))
+		}
+	}
+}
+
 impl Default for Allocator {
 	fn default() -> Self {
 		// # Safety
@@ -85,32 +111,6 @@ impl Default for Allocator {
 		let task = unsafe { mach_task_self() };
 		Self {
 			task,
-		}
-	}
-}
-
-impl Allocator {
-	fn allocate(&self, address: &mut u64, size: u64, flags: VmFlags) -> Result<(), String> {
-		// # Safety
-		//
-		// We do not allow passing of `VM_FLAGS_OVERWRITE` which would allow overwriting
-		// existing virtual regions. Other from that allocating memory is safe.
-		let result = unsafe {
-			// The `mach_vm` interface always returns page aligned addresses.
-			mach_vm_allocate(
-				self.task,
-				address,
-				size,
-				flags.bits(),
-			)
-		};
-		if result == KERN_SUCCESS {
-			Ok(())
-		} else {
-			Err(format!(
-				"mach_vm_allocate_returned: {}. address: 0x{:08x} size: 0x{:08x} flags: {:?}",
-				result, address, size, flags,
-			))
 		}
 	}
 }
@@ -172,35 +172,6 @@ unsafe impl MemoryCreator for Allocator {
 	}
 }
 
-unsafe impl LinearMemory for Memory {
-    fn size(&self) -> u32 {
-		self.wasm_pages.load(Ordering::Acquire)
-	}
-
-    fn maximum(&self) -> Option<u32> {
-		self.wasm_pages_max
-	}
-
-    fn grow(&self, delta: u32) -> Option<u32> {
-		self.wasm_pages.fetch_update(Ordering::SeqCst, Ordering:: SeqCst, |pages| {
-			let pages = pages.checked_add(delta)?;
-			if let Some(max) = self.wasm_pages_max {
-				if pages > max {
-					return None;
-				}
-			}
-			Some(pages)
-		}).ok()?;
-
-		// All the memory is already mapped. We just need to allow access.
-		self.increase_accessible_bytes().map(|bytes| (bytes >> WASM_PAGE_SHIFT) as _)
-	}
-
-    fn as_ptr(&self) -> *mut u8 {
-		self.address as _
-	}
-}
-
 impl Memory {
 	/// Change the memory permissions of the specified range.
 	///
@@ -214,6 +185,23 @@ impl Memory {
 			Ok(())
 		} else {
 			Err(format!("mach_vm_protect returned: {}", result))
+		}
+	}
+
+	/// Free the specified memory.
+	///
+	/// # Safety
+	///
+	/// The caller must make sure that the memory is no longer in use.
+	unsafe fn free(&self, address: u64, size: u64) -> Result<(), String> {
+		let result =  mach_vm_deallocate(self.task, address, size);
+		if result == KERN_SUCCESS {
+			Ok(())
+		} else {
+			Err(format!(
+				"mach_vm_deallocate returned: {}. address: 0x{:08x} size: 0x{:08x}",
+				result, address, size
+			))
 		}
 	}
 
@@ -256,6 +244,52 @@ impl Memory {
 		}
 
 		Some(accessible_bytes)
+	}
+}
+
+unsafe impl LinearMemory for Memory {
+    fn size(&self) -> u32 {
+		self.wasm_pages.load(Ordering::Acquire)
+	}
+
+    fn maximum(&self) -> Option<u32> {
+		self.wasm_pages_max
+	}
+
+    fn grow(&self, delta: u32) -> Option<u32> {
+		self.wasm_pages.fetch_update(Ordering::SeqCst, Ordering:: SeqCst, |pages| {
+			let pages = pages.checked_add(delta)?;
+			if let Some(max) = self.wasm_pages_max {
+				if pages > max {
+					return None;
+				}
+			}
+			Some(pages)
+		}).ok()?;
+
+		// All the memory is already mapped. We just need to allow access.
+		self.increase_accessible_bytes().map(|bytes| (bytes >> WASM_PAGE_SHIFT) as _)
+	}
+
+    fn as_ptr(&self) -> *mut u8 {
+		self.address as _
+	}
+}
+
+impl Drop for Memory {
+	fn drop(&mut self) {
+		let anon_max_size = anon_max_size();
+
+		// # Safety
+		//
+		// The memory got dropped which means no reference to the memory exist. Therefore
+		// it is no longer in use and can be freed safely.
+		unsafe {
+			self.free(self.address, self.mapped_bytes.min(anon_max_size)).unwrap();
+			if self.mapped_bytes > anon_max_size {
+				self.free(self.address + anon_max_size, self.mapped_bytes - anon_max_size).unwrap();
+			}
+		}
 	}
 }
 
