@@ -107,7 +107,10 @@ impl Allocator {
 		if result == KERN_SUCCESS {
 			Ok(())
 		} else {
-			Err(format!("mach_vm_allocate_returned: {}", result))
+			Err(format!(
+				"mach_vm_allocate_returned: {}. address: 0x{:08x} size: 0x{:08x} flags: {:?}",
+				result, address, size, flags,
+			))
 		}
 	}
 }
