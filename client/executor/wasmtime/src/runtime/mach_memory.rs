@@ -226,7 +226,7 @@ impl Memory {
 		let accessible_bytes = self.accessible_bytes();
 
 		// We do not support 32bit applications on macOS.
-		assert!(accessible_bytes.checked_add(self.guard_bytes).unwrap() > self.mapped_bytes,
+		assert!(accessible_bytes.checked_add(self.guard_bytes).unwrap() <= self.mapped_bytes,
 			"No memory relocation supported on macos. This will only happen on 32bit systems.");
 
 		// # Safety
@@ -319,30 +319,63 @@ fn mapped_bytes(ty: &MemoryType, reserved: Option<u64>, guard: u64) -> Result<u6
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use std::{ops::Range, fmt::self};
 	use sc_executor_common::test_utils::{get_regions, Region};
 	use wasmtime::Limits;
 
 	const DEFAULT_RESERVED: u64 = 4 * 1024 * 1024 * 1024;
 	const DEFAULT_GUARD: u64 = 2 * 1024 * 1024 * 1024;
 
-	fn create_memory(
-		ty: MemoryType,
-		reserved: Option<u64>,
-		guard: u64
-	) -> (Box<dyn LinearMemory>, Vec<(u64, Region)>)
-	{
-		let allocator = Allocator::default();
-		let mem = allocator.new_memory(ty.clone(), reserved, guard).unwrap();
-		let start = mem.as_ptr() as u64;
-		let mapped_bytes = mapped_bytes(&ty, reserved, guard).unwrap();
-		let regions = get_regions(start..(start + mapped_bytes));
-		(mem, regions)
+	struct MemInfo {
+		memory: Box<dyn LinearMemory>,
+		range: Range<u64>,
+		regions: Vec<(Range<u64>, Region)>,
 	}
+
+	impl MemInfo {
+		fn new(ty: MemoryType, reserved: Option<u64>, guard: u64) -> Self {
+			let allocator = Allocator::default();
+			let memory = allocator.new_memory(ty.clone(), reserved, guard).unwrap();
+			let start = memory.as_ptr() as u64;
+			let mapped_bytes = mapped_bytes(&ty, reserved, guard).unwrap();
+			let range = start..(start + mapped_bytes);
+			let regions = get_regions(range.clone());
+			Self {
+				memory,
+				range,
+				regions,
+			}
+		}
+	}
+
+	impl fmt::Display for MemInfo {
+		fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+			writeln!(f, "{:08x?} - {} pages accessible", self.range, self.memory.size())?;
+			writeln!(f, "--------------------------------------------------------------")?;
+			for region in &self.regions {
+				writeln!(f, "{:08x?}: {:#?}", region.0, region.1)?;
+			}
+			writeln!(f, "--------------------------------------------------------------")
+		}
+	}
+
 
 	#[test]
 	fn alloc_works() {
 		let ty = MemoryType::new(Limits::at_least(1));
-		let (_, regions) = create_memory(ty, Some(DEFAULT_RESERVED), DEFAULT_GUARD);
-		assert_eq!(regions.len(), 3);
+		let info = MemInfo::new(ty, Some(DEFAULT_RESERVED), DEFAULT_GUARD);
+		println!("{}", info);
+		assert_eq!(info.memory.size(), 1);
+		assert_eq!(info.memory.maximum(), None);
+
+		// the first region always covers the accessible memory (3 = read/write)
+		let first_region = &info.regions[0];
+		assert_eq!(first_region.1.protection, 3);
+		assert_eq!(first_region.0.end - first_region.0.start, 1 << WASM_PAGE_SHIFT);
+
+		// the rest should cover the remaining address space and be not accessible
+		// (0 == no access)
+		assert_eq!(info.regions.last().unwrap().0.end, info.range.end);
+		assert!(info.regions.iter().skip(1).all(|r| r.1.protection == 0));
 	}
 }

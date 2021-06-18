@@ -43,7 +43,7 @@ pub fn instance_resident_bytes(instance: &dyn WasmInstance) -> usize {
 /// Get all consecutive memory mappings that lie inside the specified range.
 ///
 /// Panics is some parts of the range are unmapped.
-pub fn get_regions(range: Range<u64>) -> Vec<(u64, Region)> {
+pub fn get_regions(range: Range<u64>) -> Vec<(Range<u64>, Region)> {
     let mut regions = Vec::new();
     let mut addr = range.start;
 
@@ -65,7 +65,7 @@ pub fn get_regions(range: Range<u64>) -> Vec<(u64, Region)> {
         let size = unsafe { size.assume_init() };
         let info = unsafe { info.assume_init() };
 
-        regions.push((addr, info));
+        regions.push((addr..(addr + size), info));
 
         // Only continue if the next requested address lies inside the specified range.
         addr += size;
