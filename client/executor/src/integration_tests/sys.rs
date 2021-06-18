@@ -40,8 +40,6 @@ use crate::{
 	integration_tests::mk_test_runtime,
 };
 use codec::Encode as _;
-#[cfg(target_os = "linux")]
-use linux::*;
 
 #[test]
 fn memory_consumption_compiled() {
