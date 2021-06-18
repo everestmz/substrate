@@ -120,17 +120,10 @@ unsafe impl MemoryCreator for Allocator {
     fn new_memory(
         &self,
         ty: MemoryType,
-        reserved_size_in_bytes: Option<u64>,
-        guard_size_in_bytes: u64
+        reserved_bytes: Option<u64>,
+        guard_bytes: u64
     ) -> Result<Box<dyn LinearMemory>, String> {
-		let accessible_bytes = (u64::from(ty.limits().min())) << WASM_PAGE_SHIFT;
-		let mapped_bytes = if let Some(reserved) = reserved_size_in_bytes {
-			reserved.max(accessible_bytes)
-		} else {
-			accessible_bytes
-		}
-		.checked_add(guard_size_in_bytes)
-		.ok_or_else(|| "Guard size overflowed u64".to_string())?;
+		let mapped_bytes = mapped_bytes(&ty, reserved_bytes, guard_bytes)?;
 		let anon_max_size = anon_max_size();
 
 		let mut address = 0;
@@ -160,7 +153,7 @@ unsafe impl MemoryCreator for Allocator {
 			task: self.task,
 			address,
 			mapped_bytes,
-			guard_bytes: guard_size_in_bytes,
+			guard_bytes,
 			wasm_pages: AtomicU32::new(ty.limits().min()),
 			wasm_pages_max: ty.limits().max(),
 		});
@@ -309,4 +302,47 @@ fn anon_max_size() -> u64 {
 	//
 	// There are no preconditions. It is unsafe only because it is a C-API.
 	(1u64 << 32) - unsafe { vm_page_size } as u64
+}
+
+fn mapped_bytes(ty: &MemoryType, reserved: Option<u64>, guard: u64) -> Result<u64, String> {
+	let accessible_bytes = (u64::from(ty.limits().min())) << WASM_PAGE_SHIFT;
+	let mapped_bytes = if let Some(reserved) = reserved {
+		reserved.max(accessible_bytes)
+	} else {
+		accessible_bytes
+	}
+	.checked_add(guard)
+	.ok_or_else(|| "Guard size overflowed u64".to_string())?;
+	Ok(mapped_bytes)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use sc_executor_common::test_utils::{get_regions, Region};
+	use wasmtime::Limits;
+
+	const DEFAULT_RESERVED: u64 = 4 * 1024 * 1024 * 1024;
+	const DEFAULT_GUARD: u64 = 2 * 1024 * 1024 * 1024;
+
+	fn create_memory(
+		ty: MemoryType,
+		reserved: Option<u64>,
+		guard: u64
+	) -> (Box<dyn LinearMemory>, Vec<(u64, Region)>)
+	{
+		let allocator = Allocator::default();
+		let mem = allocator.new_memory(ty.clone(), reserved, guard).unwrap();
+		let start = mem.as_ptr() as u64;
+		let mapped_bytes = mapped_bytes(&ty, reserved, guard).unwrap();
+		let regions = get_regions(start..(start + mapped_bytes));
+		(mem, regions)
+	}
+
+	#[test]
+	fn alloc_works() {
+		let ty = MemoryType::new(Limits::at_least(1));
+		let (_, regions) = create_memory(ty, Some(DEFAULT_RESERVED), DEFAULT_GUARD);
+		assert_eq!(regions.len(), 3);
+	}
 }

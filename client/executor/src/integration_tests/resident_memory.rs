@@ -16,30 +16,22 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Low level operating system dependend tests.
+//! Tests that that resident memory is handled correctly.
 
 // Constrain this only to wasmtime for the time being. Without this rustc will complain on unused
 // imports and items. The alternative is to plop `cfg(feature = wasmtime)` everywhere which seems
-// borthersome.
+// bothersome.
 #![cfg(feature = "wasmtime")]
 
-#[cfg(target_os = "linux")]
-mod linux;
-
-#[cfg(target_os = "linux")]
-use linux::*;
-
-#[cfg(target_os = "macos")]
-mod macos;
-
-#[cfg(target_os = "macos")]
-use macos::*;
+// As of right now we don't have windows support for inspecting resident memory.
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use crate::{
 	WasmExecutionMethod,
 	integration_tests::mk_test_runtime,
 };
 use codec::Encode as _;
+use sc_executor_common::test_utils::instance_resident_bytes;
 
 #[test]
 fn memory_consumption_compiled() {
