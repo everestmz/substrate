@@ -54,6 +54,7 @@ pub struct Allocator {
 }
 
 /// One memory area allocated by [`Allocator`].
+#[derive(Debug)]
 pub struct Memory {
 	/// The task that allocated this memory.
 	task: mach_port_t,
@@ -284,11 +285,18 @@ impl Drop for Memory {
 		//
 		// The memory got dropped which means no reference to the memory exist. Therefore
 		// it is no longer in use and can be freed safely.
-		unsafe {
-			self.free(self.address, self.mapped_bytes.min(anon_max_size)).unwrap();
-			if self.mapped_bytes > anon_max_size {
-				self.free(self.address + anon_max_size, self.mapped_bytes - anon_max_size).unwrap();
-			}
+		let result = unsafe {
+			self.free(self.address, self.mapped_bytes.min(anon_max_size)).and_then(|_| {
+				if self.mapped_bytes > anon_max_size {
+					self.free(self.address + anon_max_size, self.mapped_bytes - anon_max_size)
+				} else {
+					Ok(())
+				}
+			})
+		};
+
+		if let Err(err) = result {
+			log::error!("deallocating instance memory failed with: {}.\n{:#?}", err, self);
 		}
 	}
 }
