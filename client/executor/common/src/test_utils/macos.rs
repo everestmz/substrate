@@ -25,17 +25,23 @@ use mach::{
     traps::mach_task_self,
     vm::mach_vm_region,
     vm_page_size::vm_page_shift,
-    vm_region::{vm_region_info_t, VM_REGION_EXTENDED_INFO},
+    vm_region::{vm_region_extended_info, vm_region_info_t, VM_REGION_EXTENDED_INFO},
 };
 
-pub use mach::vm_region::vm_region_extended_info as Region;
+/// Size and metadata of a memory mapped region.
+pub struct Region {
+    /// The virtual memory range (addr..addr + size) of the region.
+    pub range: Range<u64>,
+    /// Metadata describing the memory mapping.
+    pub info: vm_region_extended_info,
+}
 
 /// Returns how much bytes of the instance's memory is currently resident (backed by phys mem)
 pub fn instance_resident_bytes(instance: &dyn WasmInstance) -> usize {
     let range = instance.linear_memory_range().unwrap();
     let regions = get_regions((range.start as u64)..(range.end as u64));
     assert_ne!(regions.len(), 0);
-    let resident_pages: u64 = regions.iter().map(|r| u64::from(r.1.pages_resident)).sum();
+    let resident_pages: u64 = regions.iter().map(|r| u64::from(r.info.pages_resident)).sum();
     let resident_size = unsafe { resident_pages << vm_page_shift };
     resident_size.try_into().unwrap()
 }
@@ -43,13 +49,13 @@ pub fn instance_resident_bytes(instance: &dyn WasmInstance) -> usize {
 /// Get all consecutive memory mappings that lie inside the specified range.
 ///
 /// Panics is some parts of the range are unmapped.
-pub fn get_regions(range: Range<u64>) -> Vec<(Range<u64>, Region)> {
+pub fn get_regions(range: Range<u64>) -> Vec<Region> {
     let mut regions = Vec::new();
     let mut addr = range.start;
 
     loop {
         let mut size = MaybeUninit::<u64>::uninit();
-        let mut info = MaybeUninit::<Region>::uninit();
+        let mut info = MaybeUninit::<vm_region_extended_info>::uninit();
         let result = unsafe {
             mach_vm_region(
                 mach_task_self(),
@@ -57,7 +63,7 @@ pub fn get_regions(range: Range<u64>) -> Vec<(Range<u64>, Region)> {
                 size.as_mut_ptr(),
                 VM_REGION_EXTENDED_INFO,
                 (info.as_mut_ptr()) as vm_region_info_t,
-                &mut Region::count(),
+                &mut vm_region_extended_info::count(),
                 &mut 0,
             )
         };
@@ -65,7 +71,10 @@ pub fn get_regions(range: Range<u64>) -> Vec<(Range<u64>, Region)> {
         let size = unsafe { size.assume_init() };
         let info = unsafe { info.assume_init() };
 
-        regions.push((addr..(addr + size), info));
+        regions.push(Region {
+            range: addr..(addr + size),
+            info,
+        });
 
         // Only continue if the next requested address lies inside the specified range.
         addr += size;

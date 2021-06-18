@@ -329,7 +329,7 @@ mod tests {
 	struct MemInfo {
 		memory: Box<dyn LinearMemory>,
 		range: Range<u64>,
-		regions: Vec<(Range<u64>, Region)>,
+		regions: Vec<Region>,
 	}
 
 	impl MemInfo {
@@ -353,7 +353,7 @@ mod tests {
 			writeln!(f, "{:08x?} - {} pages accessible", self.range, self.memory.size())?;
 			writeln!(f, "--------------------------------------------------------------")?;
 			for region in &self.regions {
-				writeln!(f, "{:08x?}: {:#?}", region.0, region.1)?;
+				writeln!(f, "{:08x?}: {:#?}", region.range, region.info)?;
 			}
 			writeln!(f, "--------------------------------------------------------------")
 		}
@@ -370,12 +370,12 @@ mod tests {
 
 		// the first region always covers the accessible memory (3 = read/write)
 		let first_region = &info.regions[0];
-		assert_eq!(first_region.1.protection, 3);
-		assert_eq!(first_region.0.end - first_region.0.start, 1 << WASM_PAGE_SHIFT);
+		assert_eq!(first_region.info.protection, 3);
+		assert_eq!(first_region.range.end - first_region.range.start, 1 << WASM_PAGE_SHIFT);
 
 		// the rest should cover the remaining address space and be not accessible
 		// (0 == no access)
-		assert_eq!(info.regions.last().unwrap().0.end, info.range.end);
-		assert!(info.regions.iter().skip(1).all(|r| r.1.protection == 0));
+		assert_eq!(info.regions.last().unwrap().range.end, info.range.end);
+		assert!(info.regions.iter().skip(1).all(|r| r.info.protection == 0));
 	}
 }
