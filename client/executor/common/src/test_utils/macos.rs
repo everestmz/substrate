@@ -19,7 +19,7 @@
 //! Implementation of macOS specific tests and/or helper functions.
 
 use crate::wasm_runtime::WasmInstance;
-use std::{convert::TryInto, mem::MaybeUninit, ops::Range};
+use std::{convert::TryInto, mem::MaybeUninit, ops::Range, fmt};
 use mach::{
     kern_return::KERN_SUCCESS,
     traps::mach_task_self,
@@ -34,6 +34,12 @@ pub struct Region {
     pub range: Range<u64>,
     /// Metadata describing the memory mapping.
     pub info: vm_region_extended_info,
+}
+
+impl fmt::Display for Region {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "{:08x?}: {:#?}", self.range, self.info)
+    }
 }
 
 /// Returns how much bytes of the instance's memory is currently resident (backed by phys mem)

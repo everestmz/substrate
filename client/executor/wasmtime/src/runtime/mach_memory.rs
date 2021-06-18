@@ -298,10 +298,14 @@ impl Drop for Memory {
 ///
 /// https://github.com/apple/darwin-xnu/blob/main/osfmk/mach/vm_param.h
 fn anon_max_size() -> u64 {
+	(1u64 << 32) - page_size()
+}
+
+fn page_size() -> u64 {
 	// # Safety
 	//
 	// There are no preconditions. It is unsafe only because it is a C-API.
-	(1u64 << 32) - unsafe { vm_page_size } as u64
+	(unsafe { vm_page_size }) as u64
 }
 
 fn mapped_bytes(ty: &MemoryType, reserved: Option<u64>, guard: u64) -> Result<u64, String> {
@@ -323,13 +327,23 @@ mod tests {
 	use sc_executor_common::test_utils::{get_regions, Region};
 	use wasmtime::Limits;
 
+	/// The default reserved value used by wasmtime on 64bit systems in order to
+	/// reserve the whole wasm address space and make any re-allocation unnecessary.
 	const DEFAULT_RESERVED: u64 = 4 * 1024 * 1024 * 1024;
+
+	/// The default guard size used by wasmtime on 64bit systems in order to completely
+	/// eliminate bound checks.
 	const DEFAULT_GUARD: u64 = 2 * 1024 * 1024 * 1024;
 
 	struct MemInfo {
 		memory: Box<dyn LinearMemory>,
 		range: Range<u64>,
-		regions: Vec<Region>,
+	}
+
+	impl MemInfo {
+		fn regions(&self) -> Vec<Region> {
+			get_regions(self.range.clone())
+		}
 	}
 
 	impl MemInfo {
@@ -339,11 +353,9 @@ mod tests {
 			let start = memory.as_ptr() as u64;
 			let mapped_bytes = mapped_bytes(&ty, reserved, guard).unwrap();
 			let range = start..(start + mapped_bytes);
-			let regions = get_regions(range.clone());
 			Self {
 				memory,
 				range,
-				regions,
 			}
 		}
 	}
@@ -352,30 +364,75 @@ mod tests {
 		fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 			writeln!(f, "{:08x?} - {} pages accessible", self.range, self.memory.size())?;
 			writeln!(f, "--------------------------------------------------------------")?;
-			for region in &self.regions {
-				writeln!(f, "{:08x?}: {:#?}", region.range, region.info)?;
+			for region in self.regions() {
+				writeln!(f, "{}", region)?;
 			}
 			writeln!(f, "--------------------------------------------------------------")
 		}
 	}
 
-
 	#[test]
 	fn alloc_works() {
-		let ty = MemoryType::new(Limits::at_least(1));
+		let ty = MemoryType::new(Limits::new(1, Some(5)));
 		let info = MemInfo::new(ty, Some(DEFAULT_RESERVED), DEFAULT_GUARD);
-		println!("{}", info);
 		assert_eq!(info.memory.size(), 1);
-		assert_eq!(info.memory.maximum(), None);
+		assert_eq!(info.memory.maximum(), Some(5));
+
+		let regions = info.regions();
 
 		// the first region always covers the accessible memory (3 = read/write)
-		let first_region = &info.regions[0];
-		assert_eq!(first_region.info.protection, 3);
-		assert_eq!(first_region.range.end - first_region.range.start, 1 << WASM_PAGE_SHIFT);
+		assert_eq!(regions[0].info.protection, 3);
+		assert_eq!(regions[0].range.end - regions[0].range.start, 1 << WASM_PAGE_SHIFT);
 
 		// the rest should cover the remaining address space and be not accessible
 		// (0 == no access)
-		assert_eq!(info.regions.last().unwrap().range.end, info.range.end);
-		assert!(info.regions.iter().skip(1).all(|r| r.info.protection == 0));
+		assert_eq!(regions.last().unwrap().range.end, info.range.end);
+		assert!(regions.iter().skip(1).all(|r| r.info.protection == 0));
+	}
+
+	#[test]
+	fn grow_works() {
+		let ty = MemoryType::new(Limits::at_least(1));
+		let info = MemInfo::new(ty, Some(DEFAULT_RESERVED), DEFAULT_GUARD);
+
+		let regions = info.regions();
+
+		// before growing it should be 1 accessible page
+		assert_eq!(regions[0].info.protection, 3);
+		assert_eq!(regions[0].range.end - regions[0].range.start, 1 << WASM_PAGE_SHIFT);
+
+		info.memory.grow(12);
+
+		// refetch to get changes made by grow
+		let regions = info.regions();
+
+		// grow is additive and should now cover 13 pages
+		assert_eq!(regions[0].info.protection, 3);
+		assert_eq!(regions[0].range.end - regions[0].range.start, 13 << WASM_PAGE_SHIFT);
+
+		// the rest should cover the remaining address space and be not accessible
+		assert_eq!(regions.last().unwrap().range.end, info.range.end);
+		assert!(regions.iter().skip(1).all(|r| r.info.protection == 0));
+	}
+
+	#[test]
+	fn max_alloc() {
+		let ty = MemoryType::new(Limits::at_least(65536));
+		let info = MemInfo::new(ty, Some(DEFAULT_RESERVED), DEFAULT_GUARD);
+		assert_eq!(info.memory.size(), 65536);
+		assert_eq!(info.memory.maximum(), None);
+
+		let regions = info.regions();
+
+		// the first region cannot grow to the maximum size (4GB).
+		// It is missing one host page.
+		assert_eq!(regions[0].info.protection, 3);
+		assert_eq!(regions[0].range.end - regions[0].range.start, anon_max_size());
+		assert_eq!(regions[1].info.protection, 3);
+		assert_eq!(regions[1].range.end - regions[1].range.start, page_size());
+
+		// the rest should cover the remaining address space and be not accessible
+		assert_eq!(regions.last().unwrap().range.end, info.range.end);
+		assert!(regions.iter().skip(2).all(|r| r.info.protection == 0));
 	}
 }
